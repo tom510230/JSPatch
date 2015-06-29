@@ -22,6 +22,7 @@
 		E1B89EA01B203482000645C2 /* JPMultithreadTestObject.m in Sources */ = {isa = PBXBuildFile; fileRef = E1B89E9F1B203482000645C2 /* JPMultithreadTestObject.m */; };
 		E1B89EA31B218986000645C2 /* JPInheritanceTestObjects.m in Sources */ = {isa = PBXBuildFile; fileRef = E1B89EA21B218986000645C2 /* JPInheritanceTestObjects.m */; };
 		E1B89EAE1B228818000645C2 /* multithreadTest.js in Resources */ = {isa = PBXBuildFile; fileRef = E1B89EAD1B228818000645C2 /* multithreadTest.js */; };
+		E212E9961B39344000FED128 /* testContainer.js in Resources */ = {isa = PBXBuildFile; fileRef = E2ED7E661B3005E300059A95 /* testContainer.js */; };
 		E2ED7E651B2ED77500059A95 /* JPTestContainer.m in Sources */ = {isa = PBXBuildFile; fileRef = E2ED7E641B2ED77500059A95 /* JPTestContainer.m */; };
 		E2ED7E671B3005E300059A95 /* testContainer.js in Resources */ = {isa = PBXBuildFile; fileRef = E2ED7E661B3005E300059A95 /* testContainer.js */; };
 /* End PBXBuildFile section */
@@ -246,6 +247,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E212E9961B39344000FED128 /* testContainer.js in Resources */,
 				2DD801281AF336BC005580A8 /* test.js in Resources */,
 				2D5D892E1B0B8C3B009382EC /* JSPatch.js in Resources */,
 				2D6D12FD1B0B8CF20095A435 /* Images.xcassets in Resources */,
