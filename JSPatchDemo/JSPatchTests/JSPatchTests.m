@@ -13,6 +13,8 @@
 #import "JPInheritanceTestObjects.h"
 #import "JPMultithreadTestObject.h"
 #import "JPTestContainer.h"
+#import <objc/runtime.h>
+#import <objc/message.h>
 
 @interface JSPatchTests : XCTestCase
 
@@ -145,16 +147,24 @@
                                  beforeDate:[NSDate dateWithTimeIntervalSinceNow:10]];
 }
 
-- (void)testContainer {
+- (void)testContainer
+{
+    [self loadPatch:@"testContainer"];
     
-    NSString *testPath = [[NSBundle mainBundle] pathForResource:@"container" ofType:@"js"];
-    NSString *jsTest = [[NSString alloc] initWithData:[[NSFileManager defaultManager] contentsAtPath:testPath] encoding:NSUTF8StringEncoding];
-    [JPEngine evaluateScript:jsTest];
+    JPTestContainer *obj = [[JPTestContainer alloc] init];
+
+//    XCTAssert([[obj newEmptyArray] isKindOfClass:[NSArray class]] && [obj newEmptyArray].count == 0, @"newEmptyArray");
+//    XCTAssert([[obj newArray] isKindOfClass:[NSArray class]] && [obj newArray].count > 0, @"newArray");
     
-    JSValue *objValue = [JPEngine context][@"ocObj"];
-    JPTestContainer *obj = [objValue toObjectOfClass:[JPTestContainer class]];
+//    IMP imp = class_getMethodImplementation([JPTestContainer class], NSSelectorFromString(@"getObjectWithJS:index:"));
+//    
+//    SEL selector = NSSelectorFromString(@"getObjectWithOC:index:");
+//    NSMutableString *typeDescStr = [[NSMutableString alloc] init];
+//    typeDescStr = [NSMutableString stringWithFormat:@"@@:@@"];
+//    class_addMethod([JPTestContainer class], selector, imp, [typeDescStr cStringUsingEncoding:NSUTF8StringEncoding]);
     
-    XCTAssert(obj.newArray, @"newArray");
+    NSString *str = [obj getObjectWithOC:@[@"test1", @"test2"] index:1];
+    XCTAssert([str isEqualToString:@"test2"], @"newArray");
 }
 
 - (void)testInheritance
