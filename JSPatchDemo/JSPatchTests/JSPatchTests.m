@@ -238,7 +238,7 @@
 dispatch_semaphore_t sem;
 int finishcount = 0;
 bool success = false;
-#define LOOPCOUNT 1
+#define LOOPCOUNT 100
 void thread(void* context);
 
 - (void)testDispatchQueue

@@ -175,6 +175,7 @@ static NSObject *_nullObj;
     _context = context;
     
     NSString *path = [[NSBundle bundleForClass:[self class]] pathForResource:@"JSPatch" ofType:@"js"];
+    NSAssert(path, @"can't find JSPatch.js");
     NSString *jsCore = [[NSString alloc] initWithData:[[NSFileManager defaultManager] contentsAtPath:path] encoding:NSUTF8StringEncoding];
     [_context evaluateScript:jsCore];
 }
@@ -284,7 +285,13 @@ static NSDictionary *defineClass(NSString *classDeclaration, JSValue *instanceMe
                         break;
                     }
                 }
-                if (!overrided) addNewMethod(currCls, selectorName, jsMethod, numberOfArg, !isInstance);
+                if (!overrided) {
+                    NSMutableString *typeDescStr = [@"@@:" mutableCopy];
+                    for (int i = 0; i < numberOfArg; i ++) {
+                        [typeDescStr appendString:@"@"];
+                    }
+                    overrideMethod(currCls, selectorName, jsMethod, !isInstance, [typeDescStr cStringUsingEncoding:NSUTF8StringEncoding]);
+                }
             }
         }
     }
@@ -385,32 +392,6 @@ JPMETHOD_IMPLEMENTATION(double, d, doubleValue)
 JPMETHOD_IMPLEMENTATION(BOOL, B, boolValue)
 
 #pragma clang diagnostic pop
-
-#define JPMETHOD_NEW_IMPLEMENTATION_NAME(_argCount) JPMethodNewImplementation_##_argCount
-#define JPMETHOD_NEW_IMPLEMENTATION_ARG_0 (id slf, SEL selector)
-#define JPMETHOD_NEW_IMPLEMENTATION_ARG_1 (id slf, SEL selector, id obj1)
-#define JPMETHOD_NEW_IMPLEMENTATION_ARG_2 (id slf, SEL selector, id obj1, id obj2)
-#define JPMETHOD_NEW_IMPLEMENTATION_ARG_3 (id slf, SEL selector, id obj1, id obj2, id obj3)
-#define JPMETHOD_NEW_IMPLEMENTATION_ARG_4 (id slf, SEL selector, id obj1, id obj2, id obj3, id obj4)
-#define JPMETHOD_NEW_IMPLEMENTATION_ARG_5 (id slf, SEL selector, id obj1, id obj2, id obj3, id obj4, id obj5)
-
-#define JPMETHOD_NEW_IMPLEMENTATION(_argCount, _argArr)   \
-static id JPMETHOD_NEW_IMPLEMENTATION_NAME(_argCount) JPMETHOD_NEW_IMPLEMENTATION_ARG_##_argCount { \
-    NSString *selectorName = NSStringFromSelector(selector);    \
-    NSString *clsName = NSStringFromClass([slf class]); \
-    JSValue *ret = [_JSOverideMethods[clsName][selectorName] callWithArguments:formatOCToJSList(@[slf _argArr])];    \
-    return formatJSToOC(ret); \
-}
-
-#define COMMA ,
-
-JPMETHOD_NEW_IMPLEMENTATION(0, );
-JPMETHOD_NEW_IMPLEMENTATION(1, COMMA obj1);
-JPMETHOD_NEW_IMPLEMENTATION(2, COMMA obj1 COMMA obj2);
-JPMETHOD_NEW_IMPLEMENTATION(3, COMMA obj1 COMMA obj2 COMMA obj3);
-JPMETHOD_NEW_IMPLEMENTATION(4, COMMA obj1 COMMA obj2 COMMA obj3 COMMA obj4);
-JPMETHOD_NEW_IMPLEMENTATION(5, COMMA obj1 COMMA obj2 COMMA obj3 COMMA obj4 COMMA obj5);
-
 
 static void JPForwardInvocation(id slf, SEL selector, NSInvocation *invocation)
 {
@@ -534,7 +515,7 @@ static void _initJPOverideMethods(NSString *clsName) {
     }
 }
 
-static void overrideMethod(Class cls, NSString *selectorName, JSValue *function, BOOL isClassMethod, char *typeDescription)
+static void overrideMethod(Class cls, NSString *selectorName, JSValue *function, BOOL isClassMethod, const char *typeDescription)
 {
     SEL selector = NSSelectorFromString(selectorName);
     
@@ -566,17 +547,18 @@ static void overrideMethod(Class cls, NSString *selectorName, JSValue *function,
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wundeclared-selector"
-    SEL newForwardSelector = @selector(ORIGforwardInvocation:);
-    if (!class_respondsToSelector(cls, newForwardSelector)) {
+    if (class_getMethodImplementation(cls, @selector(forwardInvocation:)) != (IMP)JPForwardInvocation) {
         IMP originalForwardImp = class_replaceMethod(cls, @selector(forwardInvocation:), (IMP)JPForwardInvocation, "v@:@");
-        class_addMethod(cls, newForwardSelector, originalForwardImp, "v@:@");
+        class_addMethod(cls, @selector(ORIGforwardInvocation:), originalForwardImp, "v@:@");
     }
 #pragma clang diagnostic pop
 
-    NSString *originalSelectorName = [NSString stringWithFormat:@"ORIG%@", selectorName];
-    SEL originalSelector = NSSelectorFromString(originalSelectorName);
-    if(!class_respondsToSelector(cls, originalSelector) && class_respondsToSelector(cls, selector)) {
-        class_addMethod(cls, originalSelector, originalImp, typeDescription);
+    if (class_respondsToSelector(cls, selector)) {
+        NSString *originalSelectorName = [NSString stringWithFormat:@"ORIG%@", selectorName];
+        SEL originalSelector = NSSelectorFromString(originalSelectorName);
+        if(!class_respondsToSelector(cls, originalSelector)) {
+            class_addMethod(cls, originalSelector, originalImp, typeDescription);
+        }
     }
     
     NSString *JPSelectorName = [NSString stringWithFormat:@"_JP%@", selectorName];
@@ -637,34 +619,6 @@ static void overrideMethod(Class cls, NSString *selectorName, JSValue *function,
         }
         class_addMethod(cls, JPSelector, JPImplementation, typeDescription);
     }
-}
-
-static void addNewMethod(Class cls, NSString *selectorName, JSValue *function, int argCount, BOOL isClassMethod)
-{
-    NSString *clsName = NSStringFromClass(cls);
-    _initJPOverideMethods(clsName);
-    _JSOverideMethods[clsName][selectorName] = function;
-    
-    SEL selector = NSSelectorFromString(selectorName);
-    IMP JPImplementation = (IMP)JPMETHOD_NEW_IMPLEMENTATION_NAME(0);
-    switch (argCount) {
-    #define JPMETHOD_NEW_CASE(_argCount) \
-        case _argCount: \
-            JPImplementation = (IMP)JPMETHOD_NEW_IMPLEMENTATION_NAME(_argCount);    \
-            break;
-            
-        JPMETHOD_NEW_CASE(0)
-        JPMETHOD_NEW_CASE(1)
-        JPMETHOD_NEW_CASE(2)
-        JPMETHOD_NEW_CASE(3)
-        JPMETHOD_NEW_CASE(4)
-        JPMETHOD_NEW_CASE(5)
-    }
-    NSMutableString *typeDescStr = [@"@@:" mutableCopy];
-    for (int i = 0; i < argCount; i ++) {
-        [typeDescStr appendString:@"@"];
-    }
-    class_addMethod(cls, selector, JPImplementation, [typeDescStr cStringUsingEncoding:NSUTF8StringEncoding]);
 }
 
 #pragma mark -
@@ -809,10 +763,13 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
     id returnValue;
     if (strncmp(returnType, "v", 1) != 0) {
         if (strncmp(returnType, "@", 1) == 0) {
-            id __unsafe_unretained tempResultSet;
-            [invocation getReturnValue:&tempResultSet];
-            returnValue = tempResultSet;
-            
+            void *result;
+            [invocation getReturnValue:&result];
+            if ([selectorName isEqualToString:@"alloc"] || [selectorName isEqualToString:@"new"]) {
+                returnValue = (__bridge_transfer id)result;
+            } else {
+                returnValue = (__bridge id)result;
+            }
             return formatOCToJS(returnValue);
             
         } else {
