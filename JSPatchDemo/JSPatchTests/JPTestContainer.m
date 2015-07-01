@@ -10,6 +10,15 @@
 
 @implementation JPTestContainer
 
+- (id)getObjectWithJS:(NSArray *)arr index:(NSInteger)index
+{
+    NSLog(@"JS");
+    return nil;
+}
 
+//- (id)getObjectWithOC:(NSArray *)arr index:(NSInteger)index
+//{
+//    return nil;
+//}
 
 @end

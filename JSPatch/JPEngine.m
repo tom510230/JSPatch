@@ -2,7 +2,7 @@
 //  JSPatch
 //
 //  Created by bang on 15/4/30.
-//  Copyright (c) 2015年 bang. All rights reserved.
+//  Copyright (c) 2015 bang. All rights reserved.
 //
 
 #import "JPEngine.h"
@@ -13,6 +13,9 @@
 @property (nonatomic) id obj;
 @property (nonatomic) void *pointer;
 @property (nonatomic) Class cls;
+- (id)unbox;
+- (void *)unboxPointer;
+- (Class)unboxClass;
 @end
 
 @implementation JPBoxing
@@ -44,6 +47,34 @@ JPBOXING_GEN(boxClass, cls, Class)
 }
 @end
 
+
+id formatJSToOC(JSValue *val);
+id formatOCToJS(id obj);
+
+@implementation JPExtension
++ (instancetype)instance
+{
+    return [[self alloc] init];
+}
+- (void *)formatPointerJSToOC:(JSValue *)val
+{
+    return [((JPBoxing *)[val toObject]) unboxPointer];
+}
+- (id)formatPointerOCToJS:(void *)pointer
+{
+    return [JPBoxing boxPointer:pointer];
+}
+- (id)formatJSToOC:(JSValue *)val
+{
+    return formatJSToOC(val);
+}
+- (id)formatOCToJS:(id)obj
+{
+    return formatOCToJS(obj);
+}
+@end
+
+
 @implementation JPEngine
 
 static JSContext *_context;
@@ -54,11 +85,9 @@ static NSString *_regexStr = @"\\.\\s*(\\w+)\\s*\\(";
 static NSString *_replaceStr = @".__c(\"$1\")(";
 static NSRegularExpression* _regex;
 static NSObject *_nullObj;
-
-+ (JSContext *)context
-{
-    return _context;
-}
+static NSObject *_nilObj;
+static NSMutableArray *_extensions;
+static NSMutableArray *_structExtensions;
 
 + (JSValue *)evaluateScript:(NSString *)script
 {
@@ -74,6 +103,28 @@ static NSObject *_nullObj;
     return [_context evaluateScript:formatedScript];
 }
 
++ (void)addExtensions:(NSArray *)extensions
+{
+    NSAssert(_context, @"please call [JPEngine startEngine]");
+    @synchronized (_context) {
+        if (!_extensions || !_structExtensions) {
+            _extensions = [[NSMutableArray alloc] init];
+            _structExtensions = [[NSMutableArray alloc] init];
+        }
+        for (JPExtension *ext in extensions) {
+            if ([ext respondsToSelector:@selector(main:)]) {
+                [_extensions addObject:ext];
+            }
+            if ([ext respondsToSelector:@selector(sizeOfStructWithTypeEncoding:)]) {
+                [_structExtensions addObject:ext];
+            }
+        }
+        
+        for (JPExtension *ext in _extensions) {
+            [ext main:_context];
+        }
+    }
+}
 
 + (void)startEngine
 {
@@ -109,6 +160,7 @@ static NSObject *_nullObj;
     };
     
     _nullObj = [[NSObject alloc] init];
+    _nilObj = [[NSObject alloc] init];
     context[@"_OC_null"] = formatOCToJS(_nullObj);
     
     __weak JSContext *weakCtx = context;
@@ -178,6 +230,11 @@ static NSObject *_nullObj;
     NSAssert(path, @"can't find JSPatch.js");
     NSString *jsCore = [[NSString alloc] initWithData:[[NSFileManager defaultManager] contentsAtPath:path] encoding:NSUTF8StringEncoding];
     [_context evaluateScript:jsCore];
+}
+
++ (JSContext *)context
+{
+    return _context;
 }
 
 #pragma mark - Implements
@@ -340,7 +397,8 @@ static _type JPMETHOD_IMPLEMENTATION_NAME(_typeString) (id slf, SEL selector) { 
 
 #define JPMETHOD_RET_ID \
     id obj = formatJSToOC(ret); \
-    if ([obj isKindOfClass:[NSNull class]]) return nil;  \
+    if (obj == _nilObj ||   \
+        ([obj isKindOfClass:[NSNumber class]] && strcmp([obj objCType], "c") == 0 && ![obj boolValue])) return nil;  \
     return obj;
 
 #define JPMETHOD_RET_STRUCT(_methodName)    \
@@ -448,9 +506,9 @@ static void JPForwardInvocation(id slf, SEL selector, NSInvocation *invocation)
                 [invocation getArgument:&arg atIndex:i];
                 static const char *blockType = @encode(typeof(^{}));
                 if (!strcmp(argumentType, blockType)) {
-                    [argList addObject:(arg ? [arg copy]: [NSNull null])];
+                    [argList addObject:(arg ? [arg copy]: _nilObj)];
                 } else {
-                    [argList addObject:(arg ? arg: [NSNull null])];
+                    [argList addObject:(arg ? arg: _nilObj)];
                 }
                 break;
             }
@@ -467,13 +525,28 @@ static void JPForwardInvocation(id slf, SEL selector, NSInvocation *invocation)
                 JP_FWD_ARG_STRUCT(CGPoint, pointToDictionary)
                 JP_FWD_ARG_STRUCT(CGSize, sizeToDictionary)
                 JP_FWD_ARG_STRUCT(NSRange, rangeToDictionary)
+                
+                @synchronized (_context) {
+                    for (JPExtension *ext in _structExtensions) {
+                        size_t size = [ext sizeOfStructWithTypeEncoding:typeString];
+                        if (size) {
+                            void *ret = malloc(size);
+                            [invocation getArgument:&ret atIndex:i];
+                            NSDictionary *dict = [ext dictOfStruct:ret typeEncoding:typeString];
+                            [argList addObject:dict];
+                            free(ret);
+                            break;
+                        }
+                    }
+                }
+                
                 break;
             }
             case ':': {
                 SEL selector;
                 [invocation getArgument:&selector atIndex:i];
                 NSString *selectorName = NSStringFromSelector(selector);
-                [argList addObject:(selectorName ? selectorName: [NSNull null])];
+                [argList addObject:(selectorName ? selectorName: _nilObj)];
                 break;
             }
             case '^':
@@ -497,7 +570,7 @@ static void JPForwardInvocation(id slf, SEL selector, NSInvocation *invocation)
     }
     
     @synchronized(_context) {
-        _TMPInvocationArguments = formatOCToJSList(argList);
+        _TMPInvocationArguments = _formatOCToJSList(argList);
 
         [invocation setSelector:JPSelector];
         [invocation invoke];
@@ -630,7 +703,7 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
     
     if (instance && [selectorName isEqualToString:@"toJS"]) {
         if ([instance isKindOfClass:[NSString class]] || [instance isKindOfClass:[NSDictionary class]] || [instance isKindOfClass:[NSArray class]]) {
-            return unboxOCObjectToJS(instance);
+            return _unboxOCObjectToJS(instance);
         }
     }
 
@@ -700,7 +773,7 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
                 
             case ':': {
                 SEL value = nil;
-                if (![valObj isEqual:[NSNull null]]) {
+                if (valObj == _nilObj) {
                     value = NSSelectorFromString(valObj);
                 }
                 [invocation setArgument:&value atIndex:i];
@@ -718,6 +791,18 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
                 JP_CALL_ARG_STRUCT(CGPoint, dictToPoint)
                 JP_CALL_ARG_STRUCT(CGSize, dictToSize)
                 JP_CALL_ARG_STRUCT(NSRange, dictToRange)
+                @synchronized (_context) {
+                    for (JPExtension *ext in _structExtensions) {
+                        size_t size = [ext sizeOfStructWithTypeEncoding:typeString];
+                        if (size) {
+                            void *ret = malloc(size);
+                            [ext structData:ret ofDict:valObj typeEncoding:typeString];
+                            [invocation setArgument:ret atIndex:i];
+                            free(ret);
+                            break;
+                        }
+                    }
+                }
                 
                 break;
             }
@@ -742,7 +827,8 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
                     [invocation setArgument:&valObj atIndex:i];
                     break;
                 }
-                if ([valObj isEqual:[NSNull null]]) {
+                if (valObj == _nilObj ||
+                    ([valObj isKindOfClass:[NSNumber class]] && strcmp([valObj objCType], "c") == 0 && ![valObj boolValue])) {
                     valObj = nil;
                     [invocation setArgument:&valObj atIndex:i];
                     break;
@@ -809,6 +895,18 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
                     JP_CALL_RET_STRUCT(CGPoint, pointToDictionary)
                     JP_CALL_RET_STRUCT(CGSize, sizeToDictionary)
                     JP_CALL_RET_STRUCT(NSRange, rangeToDictionary)
+                    @synchronized (_context) {
+                        for (JPExtension *ext in _structExtensions) {
+                            size_t size = [ext sizeOfStructWithTypeEncoding:typeString];
+                            if (size) {
+                                void *ret = malloc(size);
+                                [invocation getReturnValue:ret];
+                                NSDictionary *dict = [ext dictOfStruct:ret typeEncoding:typeString];
+                                free(ret);
+                                return dict;
+                            }
+                        }
+                    }
                     break;
                 }
                 case '*':
@@ -950,38 +1048,22 @@ static BOOL blockTypeIsObject(NSString *typeString)
 
 #pragma mark - Object format
 
-static id formatOCToJSList(NSArray *list)
-{
-    NSMutableArray *arr = [NSMutableArray new];
-    for (id obj in list) {
-        [arr addObject:formatOCToJS(obj)];
-    }
-    return arr;
-}
-
-static id formatOCToJS(id obj)
+id formatOCToJS(id obj)
 {
     if ([obj isKindOfClass:[NSString class]] || [obj isKindOfClass:[NSDictionary class]] || [obj isKindOfClass:[NSArray class]]) {
-        return wrapObj([JPBoxing boxObj:obj]);
+        return _wrapObj([JPBoxing boxObj:obj]);
     }
     if ([obj isKindOfClass:[NSNumber class]] || [obj isKindOfClass:NSClassFromString(@"NSBlock")]) {
         return obj;
     }
-    return wrapObj(obj);
+    return _wrapObj(obj);
 }
 
-static NSDictionary *wrapObj(id obj)
-{
-    if (!obj || [obj isKindOfClass:[NSNull class]]) {
-        return @{@"__isNull": @(YES)};
-    }
-    return @{@"__clsName": NSStringFromClass([obj class]), @"__obj": obj};
-}
-
-static id formatJSToOC(JSValue *jsval)
+id formatJSToOC(JSValue *jsval)
 {
     id obj = [jsval toObject];
-    if (!obj) return [NSNull null]; 
+    if (!obj || [obj isKindOfClass:[NSNull class]]) return _nilObj;
+    
     if ([obj isKindOfClass:[JPBoxing class]]) return [obj unbox];
     if ([obj isKindOfClass:[NSArray class]]) {
         NSMutableArray *newArr = [[NSMutableArray alloc] init];
@@ -1006,12 +1088,29 @@ static id formatJSToOC(JSValue *jsval)
     return obj;
 }
 
-static id unboxOCObjectToJS(id obj)
+static id _formatOCToJSList(NSArray *list)
+{
+    NSMutableArray *arr = [NSMutableArray new];
+    for (id obj in list) {
+        [arr addObject:formatOCToJS(obj)];
+    }
+    return arr;
+}
+
+static NSDictionary *_wrapObj(id obj)
+{
+    if (!obj || obj == _nilObj) {
+        return @{@"__isNull": @(YES)};
+    }
+    return @{@"__clsName": NSStringFromClass([obj class]), @"__obj": obj};
+}
+
+static id _unboxOCObjectToJS(id obj)
 {
     if ([obj isKindOfClass:[NSArray class]]) {
         NSMutableArray *newArr = [[NSMutableArray alloc] init];
         for (int i = 0; i < [obj count]; i ++) {
-            [newArr addObject:unboxOCObjectToJS(obj[i])];
+            [newArr addObject:_unboxOCObjectToJS(obj[i])];
         }
         return newArr;
     }
@@ -1019,13 +1118,13 @@ static id unboxOCObjectToJS(id obj)
         NSMutableDictionary *newDict = [[NSMutableDictionary alloc] init];
         for (NSString *key in [obj allKeys]) {
             if ([key isEqualToString:@"__c"]) continue;
-            [newDict setObject:unboxOCObjectToJS(obj[key]) forKey:key];
+            [newDict setObject:_unboxOCObjectToJS(obj[key]) forKey:key];
         }
         return newDict;
     }
     if ([obj isKindOfClass:[NSString class]] ||[obj isKindOfClass:[NSNumber class]] || [obj isKindOfClass:NSClassFromString(@"NSBlock")]) {
         return obj;
     }
-    return wrapObj(obj);
+    return _wrapObj(obj);
 }
 @end

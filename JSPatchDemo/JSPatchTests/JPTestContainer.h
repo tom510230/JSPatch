@@ -11,7 +11,8 @@
 
 @interface JPTestContainer : NSObject
 
-@property (nonatomic, assign) BOOL newArray;
-
-
+- (NSArray *)newEmptyArray;
+- (NSArray *)newArray;
+- (id)getObjectWithJS:(NSArray *)arr index:(NSInteger)index;
+- (id)getObjectWithOC:(NSArray *)arr index:(NSInteger)index;
 @end
