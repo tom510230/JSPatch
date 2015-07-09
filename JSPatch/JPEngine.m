@@ -129,7 +129,7 @@ static NSMutableArray *_structExtensions;
             if ([ext respondsToSelector:@selector(main:)]) {
                 [ext main:_context];
             }
-            if ([ext respondsToSelector:@selector(sizeOfStructWithTypeEncoding:)]) {
+            if ([ext respondsToSelector:@selector(sizeOfStructWithTypeName:)]) {
                 [_structExtensions addObject:ext];
             }
         }
@@ -172,6 +172,20 @@ static NSMutableArray *_structExtensions;
             weakCtx[@"self"] = prevSelf;
         });
     };
+    
+    context[@"sizeof"] = ^size_t(JSValue *jsVal) {
+        NSString *typeName = [jsVal toString];
+        @synchronized (_context) {
+            for (JPExtension *ext in _structExtensions) {
+                size_t size = [ext sizeOfStructWithTypeName:typeName];
+                if (size) {
+                    return size;
+                }
+            }
+        }
+        return 0;
+    };
+    
     context[@"dispatch_async_main"] = ^(JSValue *func) {
         JSValue *currSelf = weakCtx[@"self"];
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -204,13 +218,6 @@ static NSMutableArray *_structExtensions;
         NSArray *args = [JSContext currentArguments];
         for (JSValue *jsVal in args) {
             NSLog(@"JSPatch.log: %@", formatJSToOC(jsVal));
-        }
-    };
-    
-    context[@"_OC_free"] = ^(JSValue *jsVal) {
-        JPBoxing *obj = formatJSToOC(jsVal);
-        if ([obj isKindOfClass:[JPBoxing class]] && obj.pointer) {
-            free(obj.pointer);
         }
     };
     
@@ -512,7 +519,7 @@ static void JPForwardInvocation(id slf, SEL selector, NSInvocation *invocation)
                 break;
             }
             case '{': {
-                NSString *typeString = [NSString stringWithUTF8String:argumentType];
+                NSString *typeString = extractTypeName([NSString stringWithUTF8String:argumentType]);
                 #define JP_FWD_ARG_STRUCT(_type, _transFunc) \
                 if ([typeString rangeOfString:@#_type].location != NSNotFound) {    \
                     _type arg; \
@@ -527,11 +534,11 @@ static void JPForwardInvocation(id slf, SEL selector, NSInvocation *invocation)
                 
                 @synchronized (_context) {
                     for (JPExtension *ext in _structExtensions) {
-                        size_t size = [ext sizeOfStructWithTypeEncoding:typeString];
+                        size_t size = [ext sizeOfStructWithTypeName:typeString];
                         if (size) {
                             void *ret = malloc(size);
                             [invocation getArgument:&ret atIndex:i];
-                            NSDictionary *dict = [ext dictOfStruct:ret typeEncoding:typeString];
+                            NSDictionary *dict = [ext dictOfStruct:ret typeName:typeString];
                             [argList addObject:dict];
                             free(ret);
                             break;
@@ -670,8 +677,7 @@ static void overrideMethod(Class cls, NSString *selectorName, JSValue *function,
             JP_OVERRIDE_RET_CASE(sel, ':')
             
             case '{': {
-                NSString *typeString = [NSString stringWithUTF8String:returnType];
-                
+                NSString *typeString = extractTypeName([NSString stringWithUTF8String:returnType]);
                 #define JP_OVERRIDE_RET_STRUCT(_type, _funcSuffix) \
                 if ([typeString rangeOfString:@#_type].location != NSNotFound) {    \
                     JPImplementation = (IMP)JPMETHOD_IMPLEMENTATION_NAME(_funcSuffix); \
@@ -779,7 +785,7 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
                 break;
             }
             case '{': {
-                NSString *typeString = [NSString stringWithUTF8String:argumentType];
+                NSString *typeString = extractTypeName([NSString stringWithUTF8String:argumentType]);
                 #define JP_CALL_ARG_STRUCT(_type, _transFunc) \
                 if ([typeString rangeOfString:@#_type].location != NSNotFound) {    \
                     _type value = _transFunc(valObj);  \
@@ -792,10 +798,10 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
                 JP_CALL_ARG_STRUCT(NSRange, dictToRange)
                 @synchronized (_context) {
                     for (JPExtension *ext in _structExtensions) {
-                        size_t size = [ext sizeOfStructWithTypeEncoding:typeString];
+                        size_t size = [ext sizeOfStructWithTypeName:typeString];
                         if (size) {
                             void *ret = malloc(size);
-                            [ext structData:ret ofDict:valObj typeEncoding:typeString];
+                            [ext structData:ret ofDict:valObj typeName:typeString];
                             [invocation setArgument:ret atIndex:i];
                             free(ret);
                             break;
@@ -855,7 +861,10 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
         if (strncmp(returnType, "@", 1) == 0) {
             void *result;
             [invocation getReturnValue:&result];
-            if ([selectorName isEqualToString:@"alloc"] || [selectorName isEqualToString:@"new"]) {
+            
+            //For performance, ignore the other methods prefix with alloc/new/copy/mutableCopy
+            if ([selectorName isEqualToString:@"alloc"] || [selectorName isEqualToString:@"new"] ||
+                [selectorName isEqualToString:@"copy"] || [selectorName isEqualToString:@"mutableCopy"]) {
                 returnValue = (__bridge_transfer id)result;
             } else {
                 returnValue = (__bridge id)result;
@@ -888,7 +897,7 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
                 JP_CALL_RET_CASE('B', BOOL)
 
                 case '{': {
-                    NSString *typeString = [NSString stringWithUTF8String:returnType];
+                    NSString *typeString = extractTypeName([NSString stringWithUTF8String:returnType]);
                     #define JP_CALL_RET_STRUCT(_type, _transFunc) \
                     if ([typeString rangeOfString:@#_type].location != NSNotFound) {    \
                         _type result;   \
@@ -901,11 +910,11 @@ static id callSelector(NSString *className, NSString *selectorName, JSValue *arg
                     JP_CALL_RET_STRUCT(NSRange, rangeToDictionary)
                     @synchronized (_context) {
                         for (JPExtension *ext in _structExtensions) {
-                            size_t size = [ext sizeOfStructWithTypeEncoding:typeString];
+                            size_t size = [ext sizeOfStructWithTypeName:typeString];
                             if (size) {
                                 void *ret = malloc(size);
                                 [invocation getReturnValue:ret];
-                                NSDictionary *dict = [ext dictOfStruct:ret typeEncoding:typeString];
+                                NSDictionary *dict = [ext dictOfStruct:ret typeName:typeString];
                                 free(ret);
                                 return dict;
                             }
@@ -991,6 +1000,22 @@ static id genCallbackBlock(JSValue *jsVal)
 }
 
 #pragma mark - Utils
+
+static NSString *extractTypeName(NSString *typeEncodeString)
+{
+    NSArray *array = [typeEncodeString componentsSeparatedByString:@"="];
+    NSString *typeString = array[0];
+    int firstValidIndex = 0;
+    for (int i = 0; i< typeString.length; i++) {
+        char c = [typeString characterAtIndex:i];
+        if (c == '{' || c=='_') {
+            firstValidIndex++;
+        }else {
+            break;
+        }
+    }
+    return [typeString substringFromIndex:firstValidIndex];
+}
 
 static NSDictionary *rectToDictionary(CGRect rect)
 {

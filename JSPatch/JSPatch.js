@@ -128,6 +128,10 @@ var global = this
 
   global.block = function(args, cb) {
     var slf = this
+    if (args instanceof Function) {
+      cb = args
+      args = ''
+    }
     var callback = function() {
       var args = Array.prototype.slice.call(arguments)
       return cb.apply(slf, _formatOCToJS(args))
@@ -141,7 +145,6 @@ var global = this
   
   global.YES = 1
   global.NO = 0
-  global.free = _OC_free;
   
   global.__defineGetter__("nsnull", function() {
     return _formatOCToJS(_OC_null)
